@@ -1,7 +1,7 @@
 use catapult::{
     numerics::AlignedBlock,
-    search::{AdjacencyGraph as InternalGraph, graph_algo::FlatSearch},
-    sets::catapults::FifoSet,
+    search::{AdjacencyGraph as InternalGraph, SearchStrategy},
+    sets::catapults::LruSet,
     statistics::Stats,
 };
 use pyo3::{PyResult, pyclass, pymethods};
@@ -20,7 +20,7 @@ use crate::vecpy::VecPy;
 /// not thread-safe from Python's perspective.
 #[pyclass(unsendable)]
 pub struct AdjacencyGraph {
-    inner: InternalGraph<FifoSet<30>, FlatSearch>,
+    inner: InternalGraph<LruSet>,
 }
 
 #[pymethods]
@@ -32,25 +32,34 @@ impl AdjacencyGraph {
     ///     payload_path: Path to the graph payload/data file
     ///     catapults_enabled: Whether to enable LSH-based catapult acceleration
     ///     num_hash: Number of hash functions for LSH (default: 5)
+    ///     bucket_capacity: Maximum number of catapults stored per LSH bucket (default: 30)
     ///     seed: Random seed for LSH hash functions (default: 42)
     ///
     /// Returns:
     ///     A new AdjacencyGraph instance ready for search
     #[staticmethod]
-    #[pyo3(signature = (graph_path, payload_path, catapults_enabled, num_hash=5, seed=42))]
+    #[pyo3(signature = (graph_path, payload_path, catapults_enabled, num_hash=5, bucket_capacity=30, seed=42))]
     pub fn load(
         graph_path: String,
         payload_path: String,
         catapults_enabled: bool,
         num_hash: usize,
+        bucket_capacity: usize,
         seed: u64,
     ) -> PyResult<Self> {
+        let strategy = if catapults_enabled {
+            SearchStrategy::Catapult
+        } else {
+            SearchStrategy::Vanilla
+        };
+
         let graph = InternalGraph::load_flat_from_path(
             PathBuf::from(graph_path),
             PathBuf::from(payload_path),
             num_hash,
+            bucket_capacity,
             seed,
-            catapults_enabled,
+            strategy,
         );
 
         Ok(Self { inner: graph })
