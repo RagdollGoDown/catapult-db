@@ -1,6 +1,8 @@
+use engine_starter::{EngineStarter, StartingPoints};
 use graph::AdjacencyGraph;
 use pyo3::prelude::*;
 
+mod engine_starter;
 mod graph;
 mod vecpy;
 
@@ -12,5 +14,7 @@ mod vecpy;
 #[pymodule]
 fn catapultpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AdjacencyGraph>()?;
+    m.add_class::<EngineStarter>()?;
+    m.add_class::<StartingPoints>()?;
     Ok(())
 }
