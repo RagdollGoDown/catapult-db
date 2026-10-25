@@ -4,21 +4,21 @@ use crate::{search::NodeId, sets::catapults::CatapultEvictionPolicy};
 
 /// An LRU (Least Recently Used) catapult storage structure with deduplication.
 ///
-/// Maintains up to `CAPACITY` unique node indices, evicting the oldest entry when
+/// Maintains up to `CAPACITY` unique entries, evicting the oldest entry when
 /// capacity is exceeded. Reinserting an existing element removes its old position
 /// and adds it as the newest entry, maintaining set semantics.
 ///
 /// # Type Parameters
-/// * `CAPACITY` - Maximum number of catapult entries to store, must be greater than 0
+/// * `K` - The stored entry type, node indices by default
 ///
 /// # Panics
 /// Creating a `LruSet` with `CAPACITY == 0` will panic
-pub struct LruSet {
+pub struct LruSet<K = NodeId> {
     capacity: usize,
-    queue: VecDeque<NodeId>,
+    queue: VecDeque<K>,
 }
 
-impl LruSet {
+impl<K> LruSet<K> {
     /// Creates a new empty FIFO set with the specified capacity.
     ///
     /// # Returns
@@ -35,12 +35,14 @@ impl LruSet {
     }
 }
 
-impl CatapultEvictionPolicy for LruSet {
-    fn to_vec(&self) -> Vec<NodeId> {
+impl<K: Copy + Eq> CatapultEvictionPolicy for LruSet<K> {
+    type Item = K;
+
+    fn to_vec(&self) -> Vec<K> {
         self.queue.iter().copied().collect()
     }
 
-    fn insert(&mut self, key: NodeId) {
+    fn insert(&mut self, key: K) {
         // Remove any existing occurrence of the key to maintain set behavior
         if let Some(pos) = self.queue.iter().position(|&x| x == key) {
             self.queue.remove(pos);
@@ -67,7 +69,7 @@ impl CatapultEvictionPolicy for LruSet {
     }
 }
 
-impl std::fmt::Debug for LruSet {
+impl<K: std::fmt::Debug> std::fmt::Debug for LruSet<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FifoSet")
             .field("capacity", &self.capacity)
@@ -82,7 +84,7 @@ mod tests {
 
     #[test]
     fn new_creates_empty_fifo_set() {
-        let fifo = LruSet::new(5);
+        let fifo: LruSet = LruSet::new(5);
         assert_eq!(fifo.queue.len(), 0);
     }
 
@@ -160,7 +162,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn zero_capacity_panics() {
-        let _fifo = LruSet::new(0);
+        let _fifo: LruSet = LruSet::new(0);
     }
 
     #[test]
@@ -289,5 +291,18 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(vec.len(), sorted.len(), "Should have no duplicates");
+    }
+
+    #[test]
+    fn stores_pairs_with_whole_pair_deduplication() {
+        let mut lru: LruSet<(usize, usize)> = LruSet::new(2);
+
+        lru.insert((7, 1));
+        lru.insert((8, 2));
+        lru.insert((7, 1)); // Refreshes (7, 1): [(8, 2), (7, 1)]
+        assert_eq!(lru.to_vec(), vec![(8, 2), (7, 1)]);
+
+        lru.insert((9, 3)); // Evicts (8, 2)
+        assert_eq!(lru.to_vec(), vec![(7, 1), (9, 3)]);
     }
 }

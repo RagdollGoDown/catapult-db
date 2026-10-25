@@ -10,6 +10,52 @@ use pyo3::{PyResult, exceptions::PyValueError, pyclass, pymethods};
 
 use crate::vecpy::VecPy;
 
+/// Checks starter parameters and returns the hyperplane dimension.
+///
+/// The hasher works on whole SIMD blocks, so queries are zero-padded up to it.
+pub(crate) fn validate_starter_params(
+    num_hash: usize,
+    bucket_capacity: usize,
+    dim: usize,
+) -> PyResult<usize> {
+    if num_hash >= usize::BITS as usize {
+        return Err(PyValueError::new_err(format!(
+            "num_hash must be less than {}",
+            usize::BITS
+        )));
+    }
+    if bucket_capacity == 0 {
+        return Err(PyValueError::new_err(
+            "bucket_capacity must be greater than 0",
+        ));
+    }
+    Ok(dim.div_ceil(SIMD_LANECOUNT) * SIMD_LANECOUNT)
+}
+
+/// Converts a Python query into padded SIMD blocks after checking its dimension.
+pub(crate) fn aligned_query(query: VecPy, dim: usize) -> PyResult<Vec<AlignedBlock>> {
+    if query.inner.len() != dim {
+        return Err(PyValueError::new_err(format!(
+            "query has dimension {}, expected {}",
+            query.inner.len(),
+            dim
+        )));
+    }
+    Ok(AlignedBlock::allocate_padded(query.inner))
+}
+
+/// Checks that `signature` is a valid bucket index for `num_hash` hash bits.
+pub(crate) fn check_signature(signature: usize, num_hash: usize) -> PyResult<()> {
+    let num_buckets = 1usize << num_hash;
+    if signature >= num_buckets {
+        return Err(PyValueError::new_err(format!(
+            "signature {} out of range, there are {} buckets",
+            signature, num_buckets
+        )));
+    }
+    Ok(())
+}
+
 /// Starting points selected for a query.
 ///
 /// Attributes:
@@ -69,20 +115,7 @@ impl EngineStarter {
         seed: u64,
         enabled_catapults: bool,
     ) -> PyResult<Self> {
-        if num_hash >= usize::BITS as usize {
-            return Err(PyValueError::new_err(format!(
-                "num_hash must be less than {}",
-                usize::BITS
-            )));
-        }
-        if bucket_capacity == 0 {
-            return Err(PyValueError::new_err(
-                "bucket_capacity must be greater than 0",
-            ));
-        }
-
-        // The hasher works on whole SIMD blocks, queries are zero-padded to match
-        let plane_dim = dim.div_ceil(SIMD_LANECOUNT) * SIMD_LANECOUNT;
+        let plane_dim = validate_starter_params(num_hash, bucket_capacity, dim)?;
         let params = EngineStarterParams::new(
             num_hash,
             bucket_capacity,
@@ -112,15 +145,7 @@ impl EngineStarter {
     /// Raises:
     ///     ValueError: If the query does not have the configured dimension
     pub fn select_starting_points(&self, query: VecPy) -> PyResult<StartingPoints> {
-        if query.inner.len() != self.dim {
-            return Err(PyValueError::new_err(format!(
-                "query has dimension {}, expected {}",
-                query.inner.len(),
-                self.dim
-            )));
-        }
-
-        let query_aligned = AlignedBlock::allocate_padded(query.inner);
+        let query_aligned = aligned_query(query, self.dim)?;
         let points = self.inner.select_starting_points(&query_aligned);
 
         Ok(StartingPoints {
@@ -139,14 +164,7 @@ impl EngineStarter {
     /// Raises:
     ///     ValueError: If signature is not a valid bucket index
     pub fn new_catapult(&self, signature: usize, node: usize) -> PyResult<()> {
-        let num_buckets = 1usize << self.num_hash;
-        if signature >= num_buckets {
-            return Err(PyValueError::new_err(format!(
-                "signature {} out of range, there are {} buckets",
-                signature, num_buckets
-            )));
-        }
-
+        check_signature(signature, self.num_hash)?;
         self.inner
             .new_catapult(signature, NodeId { internal: node });
         Ok(())

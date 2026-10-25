@@ -16,13 +16,13 @@ pub struct EngineStarter<T: CatapultEvictionPolicy> {
     enabled_catapults: bool,
 }
 
-/// The result of starting point selection, containing the LSH signature and node indices.
-pub struct StartingPoints {
+/// The result of starting point selection, containing the LSH signature and catapults.
+pub struct StartingPoints<K = NodeId> {
     /// The LSH signature (bucket index) for the query
     pub signature: usize,
 
-    /// Catapult node indices retrieved from the LSH bucket (may be empty)
-    pub catapults: Vec<NodeId>,
+    /// Catapult entries retrieved from the LSH bucket (may be empty)
+    pub catapults: Vec<K>,
 
     /// The base starting node that is always included
     pub starting_node: NodeId,
@@ -129,7 +129,7 @@ where
     ///
     /// # Returns
     /// A `StartingPoints` struct containing the signature, catapults, and starting node
-    pub fn select_starting_points(&self, query: &[AlignedBlock]) -> StartingPoints {
+    pub fn select_starting_points(&self, query: &[AlignedBlock]) -> StartingPoints<T::Item> {
         let signature = self.hasher.hash_int(query);
         let catapults = if self.enabled_catapults {
             self.catapults[signature].read().unwrap().to_vec()
@@ -143,16 +143,31 @@ where
         }
     }
 
-    /// Records a new catapult node for a specific LSH signature bucket.
+    /// Records a new catapult for a specific LSH signature bucket.
     ///
     /// This is typically called after a successful search to cache the best result
     /// as a starting point for future queries with the same signature.
     ///
     /// # Arguments
     /// * `signature` - The LSH signature (bucket index) to insert into
-    /// * `new_cata` - The node index to cache as a catapult
-    pub fn new_catapult(&self, signature: usize, new_cata: NodeId) {
+    /// * `new_cata` - The entry to cache as a catapult
+    pub fn new_catapult(&self, signature: usize, new_cata: T::Item) {
         self.catapults[signature].write().unwrap().insert(new_cata);
+    }
+
+    /// Returns the catapults currently cached in one LSH signature bucket.
+    ///
+    /// Unlike `select_starting_points`, this ignores `enabled_catapults`.
+    ///
+    /// # Arguments
+    /// * `signature` - The LSH signature (bucket index) to read
+    pub fn catapults_in_bucket(&self, signature: usize) -> Vec<T::Item> {
+        self.catapults[signature].read().unwrap().to_vec()
+    }
+
+    /// Number of LSH signature buckets (2^num_hash).
+    pub fn num_buckets(&self) -> usize {
+        self.catapults.len()
     }
 
     /// Clears all cached catapults from all buckets.

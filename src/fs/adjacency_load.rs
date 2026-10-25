@@ -15,7 +15,7 @@ use std::{
 };
 use tracing::info_span;
 
-impl<T: CatapultEvictionPolicy> AdjacencyGraph<T> {
+impl<T: CatapultEvictionPolicy<Item = NodeId>> AdjacencyGraph<T> {
     /// Reads the next N bytes from a byte iterator.
     ///
     /// # Arguments

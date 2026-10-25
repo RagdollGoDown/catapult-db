@@ -38,7 +38,7 @@ use crate::{
 /// 5. Caches the best result as a catapult for future similar queries
 pub struct AdjacencyGraph<EvictPolicy>
 where
-    EvictPolicy: CatapultEvictionPolicy,
+    EvictPolicy: CatapultEvictionPolicy<Item = NodeId>,
 {
     adjacency: Vec<Node>,
     starter: EngineStarter<EvictPolicy>,
@@ -47,7 +47,7 @@ where
 
 impl<EvictPolicy> AdjacencyGraph<EvictPolicy>
 where
-    EvictPolicy: CatapultEvictionPolicy,
+    EvictPolicy: CatapultEvictionPolicy<Item = NodeId>,
 {
     /// Creates a new flat (single-layer) adjacency graph for ANN search.
     ///
@@ -73,7 +73,7 @@ where
 
 impl<EvictPolicy> AdjacencyGraph<EvictPolicy>
 where
-    EvictPolicy: CatapultEvictionPolicy,
+    EvictPolicy: CatapultEvictionPolicy<Item = NodeId>,
 {
     /// Computes distances from the query to a set of node indices.
     ///
@@ -230,7 +230,7 @@ where
 
 impl<EvictPolicy> AdjacencyGraph<EvictPolicy>
 where
-    EvictPolicy: CatapultEvictionPolicy,
+    EvictPolicy: CatapultEvictionPolicy<Item = NodeId>,
 {
     /// Performs approximate k-nearest neighbor search using LSH-accelerated beam search.
     ///
