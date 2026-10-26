@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use crate::search::NodeId;
+use crate::{search::NodeId, sets::NeighborSet};
 
 /// An immutable set of neighbor indices for a flat proximity graph node.
 ///
@@ -31,6 +31,12 @@ impl FlatFixedSet {
 
     pub fn to_slice(&self) -> Box<[NodeId]> {
         self.neighbors.clone()
+    }
+}
+
+impl NeighborSet for FlatFixedSet {
+    fn as_slice(&self) -> &[NodeId] {
+        &self.neighbors
     }
 }
 

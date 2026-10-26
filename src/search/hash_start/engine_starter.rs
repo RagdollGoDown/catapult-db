@@ -183,6 +183,11 @@ where
     pub fn starting_node(&self) -> NodeId {
         self.starting_node
     }
+
+    /// Replaces the default starting node returned with every selection.
+    pub fn set_starting_node(&mut self, starting_node: NodeId) {
+        self.starting_node = starting_node;
+    }
 }
 
 #[cfg(test)]

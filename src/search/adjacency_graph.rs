@@ -8,8 +8,11 @@ use crate::{
         node::Node,
     },
     sets::{
+        NeighborSet,
         candidates::{CandidateEntry, SmallestKCandidates},
         catapults::CatapultEvictionPolicy,
+        editable::FlatEditableSet,
+        fixed::FlatFixedSet,
     },
     statistics::Stats,
 };
@@ -22,7 +25,8 @@ use crate::{
 ///
 /// # Type Parameters
 /// * `EvictPolicy` - The eviction strategy for catapult storage (e.g., `FifoSet<30>`)
-/// * `Algo` - The graph search algorithm type (e.g., `FlatSearch` for single-layer graphs)
+/// * `N` - The neighbor set type: immutable [`FlatFixedSet`] for graphs loaded from
+///   disk (the default), or [`FlatEditableSet`] for graphs built and modified in memory
 ///
 /// # Invariants
 /// - `adjacency[i]` represents node `i` in the graph
@@ -36,18 +40,20 @@ use crate::{
 /// 3. Repeatedly expands the best unvisited candidate, adding its neighbors
 /// 4. Stops when all candidates in the beam have been visited
 /// 5. Caches the best result as a catapult for future similar queries
-pub struct AdjacencyGraph<EvictPolicy>
+pub struct AdjacencyGraph<EvictPolicy, N = FlatFixedSet>
 where
     EvictPolicy: CatapultEvictionPolicy<Item = NodeId>,
+    N: NeighborSet,
 {
-    adjacency: Vec<Node>,
+    adjacency: Vec<Node<N>>,
     starter: EngineStarter<EvictPolicy>,
     strategy: SearchStrategy,
 }
 
-impl<EvictPolicy> AdjacencyGraph<EvictPolicy>
+impl<EvictPolicy, N> AdjacencyGraph<EvictPolicy, N>
 where
     EvictPolicy: CatapultEvictionPolicy<Item = NodeId>,
+    N: NeighborSet,
 {
     /// Creates a new flat (single-layer) adjacency graph for ANN search.
     ///
@@ -59,7 +65,7 @@ where
     /// # Returns
     /// A new `AdjacencyGraph` instance ready for beam search
     pub fn new_flat(
-        adj: Vec<Node>,
+        adj: Vec<Node<N>>,
         engine: EngineStarter<EvictPolicy>,
         strategy: SearchStrategy,
     ) -> Self {
@@ -71,9 +77,10 @@ where
     }
 }
 
-impl<EvictPolicy> AdjacencyGraph<EvictPolicy>
+impl<EvictPolicy, N> AdjacencyGraph<EvictPolicy, N>
 where
     EvictPolicy: CatapultEvictionPolicy<Item = NodeId>,
+    N: NeighborSet,
 {
     /// Computes distances from the query to a set of node indices.
     ///
@@ -176,7 +183,7 @@ where
             // All of these guys become candidates for expansion. if we have too many candidates
             // (beam width parameter), the `candidates` data structure takes care of removing the
             // worst ones (and the duplicates).
-            let neighbors = best_candidate_neighs.to_slice();
+            let neighbors = best_candidate_neighs.as_slice();
 
             // Record each (src → dst) edge as considered before computing distances.
             if stats.has_adv_tracking() {
@@ -187,7 +194,7 @@ where
             }
 
             let neighbor_distances = self.distances_from_indices(
-                &neighbors,
+                neighbors,
                 query,
                 best_candidate_node.has_catapult_ancestor,
                 stats,
@@ -211,7 +218,7 @@ where
         // in this search. Done once per search to avoid cross-query contamination.
         if stats.has_adv_tracking() {
             for &src in &visited {
-                for &dst in self.adjacency[src.internal].neighbors.to_slice().iter() {
+                for &dst in self.adjacency[src.internal].neighbors.as_slice() {
                     if visited.contains(&dst) {
                         stats.record_used_edge(src.internal, dst.internal);
                     }
@@ -228,9 +235,10 @@ where
     }
 }
 
-impl<EvictPolicy> AdjacencyGraph<EvictPolicy>
+impl<EvictPolicy, N> AdjacencyGraph<EvictPolicy, N>
 where
     EvictPolicy: CatapultEvictionPolicy<Item = NodeId>,
+    N: NeighborSet,
 {
     /// Performs approximate k-nearest neighbor search using LSH-accelerated beam search.
     ///
@@ -253,6 +261,8 @@ where
     /// 3. Runs beam search from these starting points
     /// 4. Caches the best result as a catapult (if catapults enabled)
     /// 5. Updates statistics with catapult usage
+    ///
+    /// An empty graph returns no results.
     #[tracing::instrument(level = "trace", skip_all, fields(k, beam_width))]
     pub fn beam_search(
         &self,
@@ -261,6 +271,10 @@ where
         beam_width: usize,
         stats: &mut Stats,
     ) -> Vec<CandidateEntry> {
+        if self.adjacency.is_empty() {
+            return Vec::new();
+        }
+
         let hash_search = if let SearchStrategy::LshApg(lsh_apg) = &self.strategy {
             let mut lshapg_candidates = Vec::new();
             for candidate_set in lsh_apg
@@ -315,17 +329,73 @@ where
     ///
     /// # Returns
     /// The total number of nodes stored in the adjacency list
-    #[allow(clippy::len_without_is_empty)] // checking the size of the graph is fine, but it is never ever empty
     pub fn len(&self) -> usize {
         self.adjacency.len()
     }
 
+    /// Whether the graph has no nodes.
+    pub fn is_empty(&self) -> bool {
+        self.adjacency.is_empty()
+    }
+
+    /// The out-neighbors of node `id`.
+    pub fn neighbors(&self, id: NodeId) -> &[NodeId] {
+        self.adjacency[id.internal].neighbors.as_slice()
+    }
+
+    /// The vector stored at node `id`.
+    pub fn payload(&self, id: NodeId) -> &[AlignedBlock] {
+        &self.adjacency[id.internal].payload
+    }
+
+    /// The node every search starts from (in addition to any catapults).
+    pub fn starting_node(&self) -> NodeId {
+        self.starter.starting_node()
+    }
+
+    /// Changes the node every search starts from, e.g. to a new medoid.
+    pub fn set_starting_node(&mut self, id: NodeId) {
+        assert!(
+            id.internal < self.adjacency.len(),
+            "starting node out of range"
+        );
+        self.starter.set_starting_node(id);
+    }
+
     /// Returns the total number of directed edges in the graph (sum of all neighbor list lengths). Does not include catapult edges.
     pub fn total_edge_count(&self) -> usize {
-        self.adjacency
-            .iter()
-            .map(|n| n.neighbors.to_slice().len())
-            .sum()
+        self.adjacency.iter().map(|n| n.neighbors.len()).sum()
+    }
+}
+
+impl<EvictPolicy> AdjacencyGraph<EvictPolicy, FlatEditableSet>
+where
+    EvictPolicy: CatapultEvictionPolicy<Item = NodeId>,
+{
+    /// Appends a node and returns its id, which stays stable for the graph's lifetime.
+    ///
+    /// The first node pushed into an empty graph becomes the starting node.
+    ///
+    /// # Arguments
+    /// * `payload` - The node's vector, as aligned blocks of the graph's dimension
+    /// * `neighbors` - The node's initial out-neighbors (may be empty)
+    pub fn push_node(&mut self, payload: Box<[AlignedBlock]>, neighbors: Vec<usize>) -> NodeId {
+        let id = NodeId {
+            internal: self.adjacency.len(),
+        };
+        self.adjacency.push(Node {
+            neighbors: FlatEditableSet::new(neighbors),
+            payload,
+        });
+        if id.internal == 0 {
+            self.starter.set_starting_node(id);
+        }
+        id
+    }
+
+    /// Mutable access to the out-neighbors of node `id`, for graph construction.
+    pub fn neighbors_mut(&mut self, id: NodeId) -> &mut FlatEditableSet {
+        &mut self.adjacency[id.internal].neighbors
     }
 }
 
@@ -470,11 +540,7 @@ mod tests {
         assert_eq!(results1[1].index.internal, 2);
 
         // Verify the graph structure - count total edges
-        let total_edges: usize = graph
-            .adjacency
-            .iter()
-            .map(|n| n.neighbors.to_slice().len())
-            .sum();
+        let total_edges: usize = graph.adjacency.iter().map(|n| n.neighbors.len()).sum();
         assert_eq!(total_edges, graph.total_edge_count());
     }
 
@@ -614,5 +680,127 @@ mod tests {
         // The globally best result (Node 4) must be found and returned.
         assert_eq!(results.len(), k);
         assert_eq!(results[0].index.internal, 4);
+    }
+
+    fn block(value: f32) -> Box<[AlignedBlock]> {
+        vec![AlignedBlock::new([value; SIMD_LANECOUNT])].into_boxed_slice()
+    }
+
+    fn empty_graph() -> AdjacencyGraph<LruSet, FlatEditableSet> {
+        let params =
+            EngineStarterParams::new(4, 40, SIMD_LANECOUNT, NodeId { internal: 0 }, 42, false);
+        AdjacencyGraph::new_flat(vec![], EngineStarter::new(params), SearchStrategy::Vanilla)
+    }
+
+    #[test]
+    fn test_empty_graph_search_returns_nothing() {
+        let graph = empty_graph();
+        let mut stats = Stats::new();
+
+        assert!(graph.is_empty());
+        assert!(graph.beam_search(&block(1.0), 1, 1, &mut stats).is_empty());
+        assert_eq!(stats.get_computed_dists(), 0);
+    }
+
+    #[test]
+    fn test_first_pushed_node_becomes_starting_node() {
+        let mut graph = empty_graph();
+        let mut stats = Stats::new();
+
+        let first = graph.push_node(block(5.0), vec![]);
+        let second = graph.push_node(block(7.0), vec![]);
+
+        assert_eq!((first.internal, second.internal), (0, 1));
+        assert_eq!(graph.starting_node(), first);
+        let results = graph.beam_search(&block(7.0), 1, 1, &mut stats);
+        assert_eq!(results[0].index, first); // node 1 is unreachable without edges
+    }
+
+    #[test]
+    fn test_pushed_graph_matches_constructed_graph() {
+        let mut pushed = empty_graph();
+        for (value, neighbors) in [
+            (0.0, vec![1]),
+            (10.0, vec![2]),
+            (20.0, vec![1, 3]),
+            (30.0, vec![4]),
+            (40.0, vec![1]),
+        ] {
+            pushed.push_node(block(value), neighbors);
+        }
+        let constructed = setup_simple_graph(false);
+
+        for query in [0.0, 11.0, 26.0, 39.0] {
+            let mut pushed_stats = Stats::new();
+            let mut constructed_stats = Stats::new();
+            let pushed_results = pushed.beam_search(&block(query), 2, 3, &mut pushed_stats);
+            let constructed_results =
+                constructed.beam_search(&block(query), 2, 3, &mut constructed_stats);
+
+            assert_eq!(
+                pushed_results.iter().map(|e| e.index).collect::<Vec<_>>(),
+                constructed_results
+                    .iter()
+                    .map(|e| e.index)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                pushed_stats.get_computed_dists(),
+                constructed_stats.get_computed_dists()
+            );
+        }
+    }
+
+    #[test]
+    fn test_edited_neighbors_change_reachability() {
+        let mut graph = empty_graph();
+        let mut stats = Stats::new();
+        let start = graph.push_node(block(0.0), vec![]);
+        let far = graph.push_node(block(50.0), vec![]);
+
+        assert_eq!(
+            graph.beam_search(&block(50.0), 1, 1, &mut stats)[0].index,
+            start
+        );
+
+        graph.neighbors_mut(start).push(far);
+        assert_eq!(graph.neighbors(start), &[far]);
+        assert_eq!(
+            graph.beam_search(&block(50.0), 1, 1, &mut stats)[0].index,
+            far
+        );
+
+        graph.neighbors_mut(start).replace(vec![]);
+        assert_eq!(
+            graph.beam_search(&block(50.0), 1, 1, &mut stats)[0].index,
+            start
+        );
+    }
+
+    #[test]
+    fn test_set_starting_node_moves_search_entry() {
+        let mut graph = empty_graph();
+        let mut stats = Stats::new();
+        graph.push_node(block(0.0), vec![]);
+        let other = graph.push_node(block(50.0), vec![]);
+
+        graph.set_starting_node(other);
+
+        assert_eq!(graph.starting_node(), other);
+        assert_eq!(
+            graph.payload(other)[0],
+            AlignedBlock::new([50.0; SIMD_LANECOUNT])
+        );
+        assert_eq!(
+            graph.beam_search(&block(1.0), 1, 1, &mut stats)[0].index,
+            other
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "starting node out of range")]
+    fn test_set_starting_node_rejects_missing_node() {
+        let mut graph = empty_graph();
+        graph.set_starting_node(NodeId { internal: 0 });
     }
 }

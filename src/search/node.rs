@@ -22,9 +22,13 @@ pub struct NodeId {
 ///
 /// Each node stores both its connectivity information (neighbors) and the actual
 /// vector embedding (payload) as SIMD-aligned blocks for efficient distance computation.
-pub struct Node {
-    /// The immutable set of neighbor node indices.
-    pub neighbors: FlatFixedSet,
+///
+/// # Type Parameters
+/// * `N` - The neighbor set type: immutable [`FlatFixedSet`] by default, or an
+///   editable set for graphs built in memory
+pub struct Node<N = FlatFixedSet> {
+    /// The set of neighbor node indices.
+    pub neighbors: N,
 
     /// The vector embedding for this node, stored as SIMD-aligned blocks of f32 values
     /// for efficient parallel distance computations.
@@ -37,7 +41,7 @@ impl Debug for NodeId {
     }
 }
 
-impl Debug for Node {
+impl<N: Debug> Debug for Node<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Node")
             .field("neighbors", &self.neighbors)
