@@ -159,11 +159,31 @@ where
         beam_width: usize,
         stats: &mut Stats,
     ) -> Vec<CandidateEntry> {
+        self.beam_search_collecting(query, starting_candidates, k, beam_width, stats)
+            .0
+    }
+
+    /// Same as [`beam_search_raw`](Self::beam_search_raw), but also returns every node
+    /// expanded during the search, with its distance to the query, in expansion order.
+    ///
+    /// Vamana insertion uses the expanded nodes as the candidate pool for RobustPrune.
+    ///
+    /// # Returns
+    /// `(top_k, expanded)`
+    pub(crate) fn beam_search_collecting(
+        &self,
+        query: &[AlignedBlock],
+        starting_candidates: &[CandidateEntry],
+        k: usize,
+        beam_width: usize,
+        stats: &mut Stats,
+    ) -> (Vec<CandidateEntry>, Vec<CandidateEntry>) {
         assert!(beam_width >= k);
         stats.bump_beam_calls();
 
         let mut candidates: SmallestKCandidates = SmallestKCandidates::new(beam_width);
         let mut visited = HashSet::new();
+        let mut expanded = Vec::new();
 
         candidates.insert_batch(starting_candidates);
 
@@ -204,6 +224,7 @@ where
 
             // mark our current node as visited (not to be expanded again)
             visited.insert(best_candidate_node.index);
+            expanded.push(best_candidate_node);
             stats.bump_nodes_visited();
 
             // and find some other guy to expand, if possible. If not, we call it a day and return our best guesses.
@@ -231,7 +252,7 @@ where
         candidate_vec.sort(); // note: implicitly relying on CandidateEntry ordering here
 
         // and return the best k, job done :)
-        candidate_vec.into_iter().take(k).collect()
+        (candidate_vec.into_iter().take(k).collect(), expanded)
     }
 }
 
