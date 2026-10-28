@@ -2,10 +2,12 @@ use engine_starter::{EngineStarter, StartingPoints};
 use graph::AdjacencyGraph;
 use pair_engine_starter::{PairEngineStarter, PairStartingPoints};
 use pyo3::prelude::*;
+use vamana_index::{IndexStats, SearchResult, VamanaIndex};
 
 mod engine_starter;
 mod graph;
 mod pair_engine_starter;
+mod vamana_index;
 mod vecpy;
 
 /// A Python module implemented in Rust for fast approximate nearest neighbor search.
@@ -20,5 +22,8 @@ fn catapultpy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<StartingPoints>()?;
     m.add_class::<PairEngineStarter>()?;
     m.add_class::<PairStartingPoints>()?;
+    m.add_class::<VamanaIndex>()?;
+    m.add_class::<SearchResult>()?;
+    m.add_class::<IndexStats>()?;
     Ok(())
 }
