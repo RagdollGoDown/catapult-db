@@ -1,4 +1,5 @@
-Code in src/search/vamana/prune.rs is adapted from Microsoft DiskANN
+Code in src/search/vamana/prune.rs and src/search/vamana/consolidate.rs is adapted
+from Microsoft DiskANN
 (https://github.com/microsoft/DiskANN, commit 8a9ff2d1fc68441297a5761c5647d1d4c16fe39e)
 and is used under the following license and notice.
 
