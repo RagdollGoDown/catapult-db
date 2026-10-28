@@ -28,6 +28,11 @@ use crate::{
 /// * `N` - The neighbor set type: immutable [`FlatFixedSet`] for graphs loaded from
 ///   disk (the default), or [`FlatEditableSet`] for graphs built and modified in memory
 ///
+/// # Deletion
+/// Editable graphs support lazy deletion (see `delete` and `consolidate_deletes`).
+/// Deleted nodes keep their id and payload, are never returned by a search, and are
+/// never used as catapults.
+///
 /// # Invariants
 /// - `adjacency[i]` represents node `i` in the graph
 /// - Each `Node.neighbors` entry is a valid index into `adjacency`
@@ -48,6 +53,7 @@ where
     adjacency: Vec<Node<N>>,
     starter: EngineStarter<EvictPolicy>,
     strategy: SearchStrategy,
+    deleted: HashSet<NodeId>,
 }
 
 impl<EvictPolicy, N> AdjacencyGraph<EvictPolicy, N>
@@ -73,6 +79,7 @@ where
             adjacency: adj,
             starter: engine,
             strategy,
+            deleted: HashSet::new(),
         }
     }
 }
@@ -167,6 +174,8 @@ where
     /// expanded during the search, with its distance to the query, in expansion order.
     ///
     /// Vamana insertion uses the expanded nodes as the candidate pool for RobustPrune.
+    /// Deleted nodes are expanded like any other, but left out of the top `k`, so fewer
+    /// than `k` entries may be returned.
     ///
     /// # Returns
     /// `(top_k, expanded)`
@@ -249,6 +258,9 @@ where
 
         // we have beam_width neighbors, we only need k so we need to rerank
         let mut candidate_vec = candidates.into_iter().collect::<Vec<_>>();
+        if !self.deleted.is_empty() {
+            candidate_vec.retain(|entry| !self.deleted.contains(&entry.index));
+        }
         candidate_vec.sort(); // note: implicitly relying on CandidateEntry ordering here
 
         // and return the best k, job done :)
@@ -283,7 +295,8 @@ where
     /// 4. Caches the best result as a catapult (if catapults enabled)
     /// 5. Updates statistics with catapult usage
     ///
-    /// An empty graph returns no results.
+    /// An empty graph returns no results. Deleted nodes are never returned, so fewer
+    /// than `k` results may come back while deletions are pending.
     #[tracing::instrument(level = "trace", skip_all, fields(k, beam_width))]
     pub fn beam_search(
         &self,
@@ -296,7 +309,7 @@ where
             return Vec::new();
         }
 
-        let hash_search = if let SearchStrategy::LshApg(lsh_apg) = &self.strategy {
+        let mut hash_search = if let SearchStrategy::LshApg(lsh_apg) = &self.strategy {
             let mut lshapg_candidates = Vec::new();
             for candidate_set in lsh_apg
                 .iter()
@@ -314,6 +327,11 @@ where
         } else {
             self.starter.select_starting_points(query)
         };
+        if !self.deleted.is_empty() {
+            hash_search
+                .catapults
+                .retain(|id| !self.deleted.contains(id));
+        }
 
         // Convert catapults to candidate entries (marked as having catapult ancestry)
         let mut distances = self.distances_from_indices(&hash_search.catapults, query, true, stats);
@@ -326,7 +344,9 @@ where
         distances.extend(starting_node_entry);
 
         let search_results = self.beam_search_raw(query, &distances, k, beam_width, stats);
-        let best_result = search_results[0].index;
+        let Some(best_result) = search_results.first().map(|entry| entry.index) else {
+            return search_results;
+        };
 
         if matches!(self.strategy, SearchStrategy::Catapult) {
             self.starter
@@ -349,7 +369,7 @@ where
     /// Returns the number of nodes in the graph.
     ///
     /// # Returns
-    /// The total number of nodes stored in the adjacency list
+    /// The total number of nodes stored in the adjacency list, deleted ones included
     pub fn len(&self) -> usize {
         self.adjacency.len()
     }
@@ -357,6 +377,16 @@ where
     /// Whether the graph has no nodes.
     pub fn is_empty(&self) -> bool {
         self.adjacency.is_empty()
+    }
+
+    /// Whether node `id` has been deleted.
+    pub fn is_deleted(&self, id: NodeId) -> bool {
+        self.deleted.contains(&id)
+    }
+
+    /// The number of deleted nodes.
+    pub fn num_deleted(&self) -> usize {
+        self.deleted.len()
     }
 
     /// The out-neighbors of node `id`.
@@ -417,6 +447,20 @@ where
     /// Mutable access to the out-neighbors of node `id`, for graph construction.
     pub fn neighbors_mut(&mut self, id: NodeId) -> &mut FlatEditableSet {
         &mut self.adjacency[id.internal].neighbors
+    }
+
+    /// Marks node `id` as deleted, without touching any edges or the starting node.
+    ///
+    /// # Returns
+    /// `false` if the node was already deleted.
+    pub(crate) fn mark_deleted(&mut self, id: NodeId) -> bool {
+        assert!(id.internal < self.adjacency.len(), "node out of range");
+        self.deleted.insert(id)
+    }
+
+    /// The deleted nodes, in no particular order.
+    pub(crate) fn deleted_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.deleted.iter().copied()
     }
 }
 

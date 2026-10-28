@@ -5,7 +5,13 @@
 //! `Index::link`): candidate pools capped at `max_occlusion_size`, reverse edges
 //! appended until a list exceeds `R` times the slack factor, a medoid starting node for
 //! bulk builds, and a final pass trimming every list to `R`.
+//!
+//! Deletion follows FreshDiskANN: [`delete`](AdjacencyGraph::delete) marks a node, and
+//! [`consolidate_deletes`](AdjacencyGraph::consolidate_deletes) (adapted from DiskANN)
+//! later rewires the edges around deleted nodes.
 
+mod consolidate;
+mod delete;
 mod prune;
 
 use crate::{
@@ -79,11 +85,12 @@ where
     ///
     /// Lists can therefore hold up to `R · slack_factor` neighbors after inserts. The
     /// insertion search starts from the starting node only and never reads or writes
-    /// catapults. Its distance computations are counted in `stats`.
+    /// catapults. Its distance computations are counted in `stats`. The new node never
+    /// links to deleted nodes.
     ///
     /// # Returns
-    /// The id of the new node. The first node inserted into an empty graph becomes
-    /// the starting node.
+    /// The id of the new node. The first node inserted into an empty graph, or into one
+    /// whose nodes are all deleted, becomes the starting node.
     pub fn insert(
         &mut self,
         payload: Box<[AlignedBlock]>,
@@ -91,6 +98,9 @@ where
         stats: &mut Stats,
     ) -> NodeId {
         let id = self.push_node(payload, vec![]);
+        if self.is_deleted(self.starting_node()) {
+            self.set_starting_node(id);
+        }
         if self.len() > 1 {
             self.link(id, params, stats);
         }
@@ -101,8 +111,8 @@ where
     /// in-memory index build does:
     ///
     /// 1. All vectors are added first, without edges.
-    /// 2. If the graph was empty, the starting node becomes the medoid of the new
-    ///    vectors (the one closest to their centroid).
+    /// 2. If the graph was empty (or all its nodes are deleted), the starting node
+    ///    becomes the medoid of the new vectors (the one closest to their centroid).
     /// 3. Each new node is linked as in [`insert`](Self::insert).
     /// 4. Every list longer than `R` is pruned back to `R`.
     ///
@@ -117,7 +127,7 @@ where
         params: &VamanaParams,
         stats: &mut Stats,
     ) -> Vec<NodeId> {
-        let was_empty = self.is_empty();
+        let needs_start = self.is_empty() || self.is_deleted(self.starting_node());
         let ids: Vec<NodeId> = payloads
             .into_iter()
             .map(|payload| self.push_node(payload, vec![]))
@@ -125,7 +135,7 @@ where
         if ids.is_empty() {
             return ids;
         }
-        if was_empty {
+        if needs_start {
             let medoid = self.medoid(&ids, stats);
             self.set_starting_node(medoid);
         }
@@ -150,8 +160,9 @@ where
             let start = self.starting_node();
             let start_entry = self.entries_for(p, &[start], stats);
 
-            let (_, expanded) =
+            let (_, mut expanded) =
                 self.beam_search_collecting(query, &start_entry, 1, params.build_beam_width, stats);
+            expanded.retain(|entry| !self.is_deleted(entry.index));
             expanded
         };
 
@@ -276,21 +287,21 @@ mod tests {
     };
     use crate::sets::catapults::LruSet;
 
-    type EditableGraph = AdjacencyGraph<LruSet, FlatEditableSet>;
+    pub(super) type EditableGraph = AdjacencyGraph<LruSet, FlatEditableSet>;
 
-    fn empty_graph(dim: usize) -> EditableGraph {
+    pub(super) fn empty_graph(dim: usize) -> EditableGraph {
         let params = EngineStarterParams::new(4, 40, dim, NodeId { internal: 0 }, 42, false);
         AdjacencyGraph::new_flat(vec![], EngineStarter::new(params), SearchStrategy::Vanilla)
     }
 
     /// A vector whose first coordinate is `x` and the rest zero.
-    fn on_line(x: f32) -> Box<[AlignedBlock]> {
+    pub(super) fn on_line(x: f32) -> Box<[AlignedBlock]> {
         let mut data = [0.0; SIMD_LANECOUNT];
         data[0] = x;
         vec![AlignedBlock::new(data)].into_boxed_slice()
     }
 
-    fn random_unit_vectors(n: usize, dim: usize, seed: u64) -> Vec<Box<[AlignedBlock]>> {
+    pub(super) fn random_unit_vectors(n: usize, dim: usize, seed: u64) -> Vec<Box<[AlignedBlock]>> {
         let mut rng = StdRng::seed_from_u64(seed);
         (0..n)
             .map(|_| {
