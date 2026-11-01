@@ -88,7 +88,7 @@ impl IndexStats {
 ///     distances: Their squared L2 distances to the query
 ///     nodes_visited: Number of nodes this search expanded
 ///     dists_computed: Number of distance computations (vector comparisons) it made
-///     used_catapults: Whether a result descends from a catapult starting point
+///     used_catapults: Whether a result descends from a catapult or a given start key
 #[pyclass(frozen, get_all)]
 pub struct SearchResult {
     keys: Vec<String>,
@@ -334,6 +334,9 @@ impl VamanaIndex {
     ///     query: Query vector (e.g. a 1-D float32 NumPy array)
     ///     k: Number of nearest vectors to return (default: 1)
     ///     beam_width: Width of the search beam, at least k (default: 32)
+    ///     start_keys: Keys to also start the search from, e.g. sent by another peer
+    ///         (default: None). They are used like catapults, alongside the index's
+    ///         own; keys not in the index (unknown or removed) are skipped.
     ///
     /// Returns:
     ///     A SearchResult with at most k keys; fewer if the index holds fewer vectors
@@ -341,12 +344,13 @@ impl VamanaIndex {
     /// Raises:
     ///     ValueError: If the query does not have the index's dimension, k is 0, or
     ///         beam_width is smaller than k
-    #[pyo3(signature = (query, k=1, beam_width=32))]
+    #[pyo3(signature = (query, k=1, beam_width=32, start_keys=None))]
     pub fn search(
         &mut self,
         query: FloatVec,
         k: usize,
         beam_width: usize,
+        start_keys: Option<Vec<String>>,
     ) -> PyResult<SearchResult> {
         if k == 0 || beam_width < k {
             return Err(PyValueError::new_err(
@@ -355,8 +359,16 @@ impl VamanaIndex {
         }
         let query = self.aligned(query, "query")?;
 
+        let starts: Vec<NodeId> = start_keys
+            .iter()
+            .flatten()
+            .filter_map(|key| self.node_by_key.get(key).copied())
+            .collect();
+
         let mut stats = Stats::new();
-        let found = self.graph.beam_search(&query, k, beam_width, &mut stats);
+        let found = self
+            .graph
+            .beam_search_from(&query, &starts, k, beam_width, &mut stats);
         self.search_stats = self.search_stats.merge(&stats);
 
         Ok(SearchResult {
