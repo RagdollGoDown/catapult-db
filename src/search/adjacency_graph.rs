@@ -305,6 +305,28 @@ where
         beam_width: usize,
         stats: &mut Stats,
     ) -> Vec<CandidateEntry> {
+        self.beam_search_from(query, &[], k, beam_width, stats)
+    }
+
+    /// Same as [`beam_search`](Self::beam_search), but also starts from `extra_starts`,
+    /// e.g. starting points sent by a remote caller.
+    ///
+    /// The extra starts are treated like catapults: they join the ones found in the
+    /// query's LSH bucket, and their results are marked as having a catapult ancestor.
+    /// Starts that are deleted, repeated, or already among the starting points are
+    /// skipped. The starting node is always used as well.
+    ///
+    /// # Panics
+    /// If an extra start is not a node of the graph.
+    #[tracing::instrument(level = "trace", skip_all, fields(k, beam_width))]
+    pub fn beam_search_from(
+        &self,
+        query: &[AlignedBlock],
+        extra_starts: &[NodeId],
+        k: usize,
+        beam_width: usize,
+        stats: &mut Stats,
+    ) -> Vec<CandidateEntry> {
         if self.adjacency.is_empty() {
             return Vec::new();
         }
@@ -327,6 +349,15 @@ where
         } else {
             self.starter.select_starting_points(query)
         };
+        for &id in extra_starts {
+            assert!(
+                id.internal < self.adjacency.len(),
+                "starting point out of range"
+            );
+            if id != hash_search.starting_node && !hash_search.catapults.contains(&id) {
+                hash_search.catapults.push(id);
+            }
+        }
         if !self.deleted.is_empty() {
             hash_search
                 .catapults
@@ -867,5 +898,74 @@ mod tests {
     fn test_set_starting_node_rejects_missing_node() {
         let mut graph = empty_graph();
         graph.set_starting_node(NodeId { internal: 0 });
+    }
+
+    #[test]
+    fn test_extra_start_near_query_shortens_search() {
+        let graph = setup_simple_graph(false);
+        let query = block(40.0);
+        let near = NodeId { internal: 4 };
+        let mut default_stats = Stats::new();
+        let mut from_stats = Stats::new();
+
+        let default_results = graph.beam_search(&query, 1, 1, &mut default_stats);
+        let from_results = graph.beam_search_from(&query, &[near], 1, 1, &mut from_stats);
+
+        assert_eq!(default_results[0].index, near);
+        assert_eq!(from_results[0].index, near);
+        assert!(from_results[0].has_catapult_ancestor);
+        assert!(from_stats.get_nodes_visited() < default_stats.get_nodes_visited());
+    }
+
+    #[test]
+    fn test_no_extra_starts_matches_beam_search() {
+        let graph = setup_simple_graph(false);
+        for query in [0.0, 11.0, 26.0, 39.0] {
+            let mut search_stats = Stats::new();
+            let mut from_stats = Stats::new();
+            let search_results = graph.beam_search(&block(query), 2, 3, &mut search_stats);
+            let from_results = graph.beam_search_from(&block(query), &[], 2, 3, &mut from_stats);
+
+            assert_eq!(search_results, from_results);
+            assert_eq!(
+                search_stats.get_computed_dists(),
+                from_stats.get_computed_dists()
+            );
+        }
+    }
+
+    #[test]
+    fn test_repeated_and_deleted_extra_starts_are_skipped() {
+        let mut graph = empty_graph();
+        let start = graph.push_node(block(0.0), vec![]);
+        let near = graph.push_node(block(40.0), vec![]);
+        let gone = graph.push_node(block(39.0), vec![]);
+        graph.mark_deleted(gone);
+        let mut once_stats = Stats::new();
+        let mut repeated_stats = Stats::new();
+
+        let once = graph.beam_search_from(&block(39.0), &[near], 1, 1, &mut once_stats);
+        let repeated = graph.beam_search_from(
+            &block(39.0),
+            &[start, near, near, gone],
+            1,
+            1,
+            &mut repeated_stats,
+        );
+
+        assert_eq!(once[0].index, near);
+        assert_eq!(once, repeated);
+        assert_eq!(
+            once_stats.get_computed_dists(),
+            repeated_stats.get_computed_dists()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "starting point out of range")]
+    fn test_extra_start_out_of_range_panics() {
+        let graph = setup_simple_graph(false);
+        let mut stats = Stats::new();
+        graph.beam_search_from(&block(0.0), &[NodeId { internal: 5 }], 1, 1, &mut stats);
     }
 }
