@@ -400,6 +400,30 @@ impl VamanaIndex {
         self.graph.clear_all_catapults();
     }
 
+    /// The catapult LSH bucket (0 .. 2**num_hash) a search for `query` uses.
+    ///
+    /// Measurement only: it hashes the query again and is not counted in
+    /// `search_stats`. Returns None when catapults are disabled.
+    ///
+    /// Raises:
+    ///     ValueError: If the query does not have the index's dimension
+    pub fn bucket_of(&self, query: FloatVec) -> PyResult<Option<usize>> {
+        if !self.starter_params.enabled_catapults {
+            return Ok(None);
+        }
+        let query = self.aligned(query, "query")?;
+        Ok(Some(self.graph.catapult_signature(&query)))
+    }
+
+    /// Catapults cached in each LSH bucket, in bucket order; empty when catapults
+    /// are disabled.
+    pub fn catapult_bucket_sizes(&self) -> Vec<usize> {
+        if !self.starter_params.enabled_catapults {
+            return Vec::new();
+        }
+        self.graph.catapult_bucket_sizes()
+    }
+
     /// Work done by all searches since creation or the last `reset_stats`.
     #[getter]
     pub fn search_stats(&self) -> IndexStats {

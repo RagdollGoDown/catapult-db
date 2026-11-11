@@ -165,6 +165,22 @@ where
         self.catapults[signature].read().unwrap().to_vec()
     }
 
+    /// The LSH signature (bucket index) a query maps to, without reading the bucket.
+    ///
+    /// Same hash as `select_starting_points`; for measuring how queries spread
+    /// over buckets.
+    pub fn signature(&self, query: &[AlignedBlock]) -> usize {
+        self.hasher.hash_int(query)
+    }
+
+    /// Number of entries currently cached in each bucket, in signature order.
+    pub fn bucket_sizes(&self) -> Vec<usize> {
+        self.catapults
+            .iter()
+            .map(|bucket| bucket.read().unwrap().to_vec().len())
+            .collect()
+    }
+
     /// Number of LSH signature buckets (2^num_hash).
     pub fn num_buckets(&self) -> usize {
         self.catapults.len()

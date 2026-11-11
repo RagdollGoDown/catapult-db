@@ -389,6 +389,16 @@ where
         search_results
     }
 
+    /// The catapult LSH bucket a query maps to (whether or not catapults are used).
+    pub fn catapult_signature(&self, query: &[AlignedBlock]) -> usize {
+        self.starter.signature(query)
+    }
+
+    /// Number of catapults cached in each LSH bucket, in signature order.
+    pub fn catapult_bucket_sizes(&self) -> Vec<usize> {
+        self.starter.bucket_sizes()
+    }
+
     /// Clears all cached catapults from all LSH buckets.
     ///
     /// This is useful for benchmarking to measure performance without the benefit
